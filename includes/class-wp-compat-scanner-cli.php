@@ -87,6 +87,9 @@ class WP_Compat_Scanner_CLI {
 			return;
 		}
 
+		// Normalize the map: ensure function versions take precedence over hook versions for conflicting symbols.
+		$since_map = $this->normalize_compatibility_map( $since_map );
+
 		$has_issues = false;
 		$results = array();
 
@@ -130,8 +133,8 @@ class WP_Compat_Scanner_CLI {
 				$source = $version_source;
 				WP_CLI::log( sprintf( '   ✅ Minimum version declared: %s (from %s)', $declared_version, $source ) );
 
-				// Scan for used symbols.
-				$used_symbols = \WP_Since\Scanner\PluginScanner::scan( $plugin_path );
+				// Scan for used symbols, excluding vendor directories.
+				$used_symbols = $this->scan_plugin_excluding_vendor( $plugin_path );
 
 				// Filter out false positives: if a symbol exists as both function and hook,
 				// prefer the function version (functions are usually older than hooks).
@@ -599,30 +602,36 @@ class WP_Compat_Scanner_CLI {
 			}
 		}
 		
+		// Common WordPress functions that have hooks with the same name (introduced later).
+		$function_hook_conflicts = array(
+			'set_transient'      => '2.8.0',  // Function exists since 2.8.0, hook added in 6.8.0
+			'get_transient'      => '2.8.0',  // Function exists since 2.8.0
+			'delete_transient'   => '2.8.0',  // Function exists since 2.8.0
+			'set_site_transient' => '2.9.0', // Function exists since 2.9.0, hook added in 6.8.0
+			'get_site_transient' => '2.9.0',  // Function exists since 2.9.0
+			'delete_site_transient' => '2.9.0', // Function exists since 2.9.0
+		);
+		
 		// Filter symbols: if it's a known function, prefer it over hook entries.
 		foreach ( $used_symbols as $symbol ) {
 			// If this symbol exists as a function in the map, use it.
-			// Otherwise, check if there's a function with this name that should take precedence.
 			if ( isset( $known_functions[ $symbol ] ) ) {
 				// It's a function, include it.
 				$filtered[] = $symbol;
 			} elseif ( isset( $since_map[ $symbol ] ) && $since_map[ $symbol ]['type'] === 'hook' ) {
-				// It's a hook. Check if there's a function with the same name.
-				// Common WordPress functions that might conflict with hooks.
-				$common_functions = array(
-					'set_transient',  // Function exists since 2.8.0, hook added in 6.8.0
-					'get_transient',  // Function exists since 2.8.0
-					'delete_transient', // Function exists since 2.8.0
-				);
-				
-				if ( in_array( $symbol, $common_functions, true ) ) {
-					// This is a known function that exists, skip the hook entry.
+				// It's a hook. Check if there's a function with the same name that should take precedence.
+				if ( isset( $function_hook_conflicts[ $symbol ] ) ) {
+					// This symbol has a function version that exists earlier than the hook.
+					// The function version should be in the map (since it's a core WordPress function),
+					// but if it's not, we know it exists from our conflict list.
+					// Skip the hook entry - if the plugin is using this symbol, it's likely
+					// using the function (which is much more common than hook usage).
 					// The scanner should have detected the function call, not the hook.
 					continue;
+				} else {
+					// Include hook entries that aren't conflicting with functions.
+					$filtered[] = $symbol;
 				}
-				
-				// Include hook entries that aren't conflicting with functions.
-				$filtered[] = $symbol;
 			} else {
 				// Unknown type or not in map, include it.
 				$filtered[] = $symbol;
@@ -630,6 +639,126 @@ class WP_Compat_Scanner_CLI {
 		}
 		
 		return array_unique( $filtered );
+	}
+
+	/**
+	 * Normalize compatibility map to ensure function versions take precedence over hook versions.
+	 * 
+	 * Some symbols exist as both functions and hooks. When both exist in the map,
+	 * we should prefer the function version (which is usually older) over the hook version.
+	 *
+	 * @param array $since_map Compatibility map.
+	 * @return array Normalized compatibility map.
+	 */
+	private function normalize_compatibility_map( $since_map ) {
+		// Common WordPress functions that have hooks with the same name (introduced later).
+		$function_hook_conflicts = array(
+			'set_transient'      => '2.8.0',  // Function exists since 2.8.0, hook added in 6.8.0
+			'get_transient'      => '2.8.0',  // Function exists since 2.8.0
+			'delete_transient'   => '2.8.0',  // Function exists since 2.8.0
+			'set_site_transient' => '2.9.0', // Function exists since 2.9.0, hook added in 6.8.0
+			'get_site_transient' => '2.9.0',  // Function exists since 2.9.0
+			'delete_site_transient' => '2.9.0', // Function exists since 2.9.0
+		);
+
+		$normalized_map = $since_map;
+
+		foreach ( $function_hook_conflicts as $symbol => $function_version ) {
+			// Check if this symbol exists in the map as a hook.
+			if ( isset( $normalized_map[ $symbol ] ) && 
+				 isset( $normalized_map[ $symbol ]['type'] ) && 
+				 $normalized_map[ $symbol ]['type'] === 'hook' ) {
+				
+				// Check if there's also a function version in the map.
+				// If not, we need to add it with the correct version.
+				$hook_version = $normalized_map[ $symbol ]['since'] ?? null;
+				
+				// If the hook version is newer than the function version, replace it with function version.
+				if ( $hook_version && 
+					 \WP_Since\Utils\VersionHelper::compare( 
+						 \WP_Since\Utils\VersionHelper::normalize( $hook_version ), 
+						 \WP_Since\Utils\VersionHelper::normalize( $function_version ) 
+					 ) > 0 ) {
+					// Replace hook entry with function entry.
+					$normalized_map[ $symbol ] = array(
+						'since' => $function_version,
+						'type' => 'function',
+						'file' => $normalized_map[ $symbol ]['file'] ?? '',
+					);
+				}
+			}
+		}
+
+		return $normalized_map;
+	}
+
+	/**
+	 * Scan plugin excluding vendor directories.
+	 * 
+	 * Wraps PluginScanner::scan() but excludes vendor directories to avoid
+	 * false positives from third-party dependencies.
+	 *
+	 * @param string $plugin_path Path to the plugin directory.
+	 * @return array Array of used symbols.
+	 */
+	private function scan_plugin_excluding_vendor( $plugin_path ) {
+		// Use the standard scanner but filter out vendor directories.
+		// We'll scan the plugin directory but exclude vendor subdirectories.
+		$used_symbols = array();
+		
+		// Get ignore patterns from .distignore or .gitattributes if they exist.
+		$ignore_paths = \WP_Since\Resolver\IgnoreRulesResolver::getIgnoredPaths( $plugin_path );
+		
+		// Always exclude vendor directories.
+		$ignore_paths[] = 'vendor';
+		$ignore_paths[] = 'node_modules'; // Also exclude node_modules if present.
+		
+		// Use PHP Parser to scan files, excluding vendor directories.
+		$parser = (new \PhpParser\ParserFactory())->create(\PhpParser\ParserFactory::PREFER_PHP7);
+		$traverser = new \PhpParser\NodeTraverser();
+		$traverser->addVisitor(new \PhpParser\NodeVisitor\ParentConnectingVisitor());
+		
+		$var_map = array();
+		$rii = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator( $plugin_path ));
+		
+		foreach ( $rii as $file ) {
+			// Get relative path from plugin root.
+			$plugin_path_normalized = rtrim( $plugin_path, '/' ) . '/';
+			$relative_path = str_replace( $plugin_path_normalized, '', $file->getPathname() );
+			
+			// Skip directories, non-PHP files, and ignored paths (including vendor).
+			if (
+				$file->isDir() ||
+				$file->getExtension() !== 'php' ||
+				\WP_Since\Resolver\IgnoreRulesResolver::shouldIgnore( $relative_path, $ignore_paths )
+			) {
+				continue;
+			}
+			
+			// Skip vendor directories explicitly (at root or anywhere in path).
+			if ( strpos( $relative_path, 'vendor/' ) === 0 || strpos( $relative_path, '/vendor/' ) !== false ) {
+				continue;
+			}
+			
+			$code = file_get_contents( $file->getPathname() );
+			$ignored_lines = \WP_Since\Resolver\InlineIgnoreResolver::extractIgnoredLines( $code );
+			
+			$visitor = new \WP_Since\Scanner\SymbolExtractorVisitor( $used_symbols, $var_map, $ignored_lines );
+			$traverser->addVisitor( $visitor );
+			
+			try {
+				$stmts = $parser->parse( $code );
+				if ( $stmts ) {
+					$traverser->traverse( $stmts );
+				}
+			} catch ( \Exception $e ) {
+				// Skip files with parse errors.
+			}
+			
+			$traverser->removeVisitor( $visitor );
+		}
+		
+		return array_unique( $used_symbols );
 	}
 
 	/**

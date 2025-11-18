@@ -1,5 +1,33 @@
+# Composer
 /vendor/
 composer.lock
+
+# Generated compatibility maps
+wp-since-*.json
+wp69-changes-*.json
+
+# OS files
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Logs
 *.log
 
+# Temporary files
+/tmp/
+*.tmp
+
+# Node (if added later)
+node_modules/
+package-lock.json
+
+# Build artifacts
+/build/
+/dist/
