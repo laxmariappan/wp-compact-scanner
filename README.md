@@ -200,6 +200,18 @@ wp compat-scanner generate_map --source-dir=/path/to/wordpress
 - WP-CLI
 - Composer
 
+## Changelog
+
+### 1.1.0
+- Updated `eduardovillao/wp-since` to v1.4.0 with refreshed WordPress since-map data through 2025.
+- Leverages new type-prefixed keys (`function:`, `hook:`, `class:`) which natively resolve function/hook name collisions — removes the need for manual conflict workarounds.
+- Removed anonymous class monkey-patch in map generation (fixed upstream in v1.4.0).
+- Improved symbol display in scan output: now shows `name (type)` format.
+- Removed bundled `wp-since-6.8.json` and `wp-since-6.9-RC1.json` (use `generate_map` or the vendor-shipped map instead).
+
+### 1.0.0
+- Initial release.
+
 ## Credits
 
 Uses the [wp-since](https://github.com/eduardovillao/wp-since) library by Eduardo Villão for core compatibility checking functionality.
