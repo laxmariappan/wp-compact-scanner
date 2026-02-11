@@ -8,7 +8,7 @@
 	},
 	"require-dev": {
 		"wp-cli/wp-cli": "^2.0",
-		"eduardovillao/wp-since": "^1.3"
+		"eduardovillao/wp-since": "^1.4"
 	},
 	"autoload": {
 		"psr-4": {
