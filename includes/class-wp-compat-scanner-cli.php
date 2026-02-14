@@ -87,9 +87,6 @@ class WP_Compat_Scanner_CLI {
 			return;
 		}
 
-		// Normalize the map: ensure function versions take precedence over hook versions for conflicting symbols.
-		$since_map = $this->normalize_compatibility_map( $since_map );
-
 		$has_issues = false;
 		$results = array();
 
@@ -136,13 +133,9 @@ class WP_Compat_Scanner_CLI {
 				// Scan for used symbols, excluding vendor directories.
 				$used_symbols = $this->scan_plugin_excluding_vendor( $plugin_path );
 
-				// Filter out false positives: if a symbol exists as both function and hook,
-				// prefer the function version (functions are usually older than hooks).
-				$filtered_symbols = $this->filter_symbol_conflicts( $used_symbols, $since_map );
-				
-				// Check compatibility.
+				// Check compatibility (v1.4.0 type-prefixed keys prevent function/hook collisions).
 				$checker = new \WP_Since\Checker\CompatibilityChecker( $since_map );
-				$incompatible = $checker->check( $filtered_symbols, $declared_version );
+				$incompatible = $checker->check( $used_symbols, $declared_version );
 
 				// Check for symbols introduced in 6.9 RC1 (if checking against 6.9 RC1 map).
 				$new_in_69 = $this->get_symbols_introduced_in_version( $used_symbols, $since_map, '6.9' );
@@ -161,7 +154,7 @@ class WP_Compat_Scanner_CLI {
 					$table_data = array();
 					foreach ( $incompatible as $symbol => $version ) {
 						$table_data[] = array(
-							'Symbol' => $symbol,
+							'Symbol' => $this->format_symbol_name( $symbol ),
 							'Introduced in WP' => $version,
 						);
 					}
@@ -185,7 +178,7 @@ class WP_Compat_Scanner_CLI {
 					$new_table = array();
 					foreach ( $new_in_69 as $symbol => $version ) {
 						$new_table[] = array(
-							'Symbol' => $symbol,
+							'Symbol' => $this->format_symbol_name( $symbol ),
 							'Introduced in WP' => $version,
 						);
 					}
@@ -199,7 +192,7 @@ class WP_Compat_Scanner_CLI {
 					$deprecated_table = array();
 					foreach ( $deprecated_symbols as $symbol => $info ) {
 						$deprecated_table[] = array(
-							'Symbol' => $symbol,
+							'Symbol' => $this->format_symbol_name( $symbol ),
 							'Deprecated in WP' => $info['deprecated'],
 							'Type' => isset( $info['type'] ) ? $info['type'] : 'unknown',
 						);
@@ -459,14 +452,7 @@ class WP_Compat_Scanner_CLI {
 		$source_dir_escaped = addslashes( $source_dir );
 		$output_path_escaped = addslashes( $output_path );
 		$vendor_autoload_escaped = addslashes( $vendor_autoload );
-		
-		// Fix null name issue in the script for anonymous classes/interfaces.
-		$generate_script_content = str_replace(
-			'$this->addResult($node->name->toString(), $type, $since, $deprecated);',
-			'if ($node->name) { $this->addResult($node->name->toString(), $type, $since, $deprecated); }',
-			$generate_script_content
-		);
-		
+
 		$modified_script = str_replace(
 			array(
 				'require __DIR__ . \'/vendor/autoload.php\';',
@@ -581,115 +567,6 @@ class WP_Compat_Scanner_CLI {
 		}
 
 		return rmdir( $dir );
-	}
-
-	/**
-	 * Filter symbol conflicts where the same name exists as both function and hook.
-	 * Prefer function entries over hook entries to avoid false positives.
-	 *
-	 * @param array $used_symbols Array of symbols used by the plugin.
-	 * @param array $since_map    Compatibility map.
-	 * @return array Filtered array of symbols.
-	 */
-	private function filter_symbol_conflicts( $used_symbols, $since_map ) {
-		$filtered = array();
-		$known_functions = array();
-		
-		// Build a list of known WordPress functions from the map.
-		foreach ( $since_map as $symbol => $data ) {
-			if ( isset( $data['type'] ) && $data['type'] === 'function' ) {
-				$known_functions[ $symbol ] = true;
-			}
-		}
-		
-		// Common WordPress functions that have hooks with the same name (introduced later).
-		$function_hook_conflicts = array(
-			'set_transient'      => '2.8.0',  // Function exists since 2.8.0, hook added in 6.8.0
-			'get_transient'      => '2.8.0',  // Function exists since 2.8.0
-			'delete_transient'   => '2.8.0',  // Function exists since 2.8.0
-			'set_site_transient' => '2.9.0', // Function exists since 2.9.0, hook added in 6.8.0
-			'get_site_transient' => '2.9.0',  // Function exists since 2.9.0
-			'delete_site_transient' => '2.9.0', // Function exists since 2.9.0
-		);
-		
-		// Filter symbols: if it's a known function, prefer it over hook entries.
-		foreach ( $used_symbols as $symbol ) {
-			// If this symbol exists as a function in the map, use it.
-			if ( isset( $known_functions[ $symbol ] ) ) {
-				// It's a function, include it.
-				$filtered[] = $symbol;
-			} elseif ( isset( $since_map[ $symbol ] ) && $since_map[ $symbol ]['type'] === 'hook' ) {
-				// It's a hook. Check if there's a function with the same name that should take precedence.
-				if ( isset( $function_hook_conflicts[ $symbol ] ) ) {
-					// This symbol has a function version that exists earlier than the hook.
-					// The function version should be in the map (since it's a core WordPress function),
-					// but if it's not, we know it exists from our conflict list.
-					// Skip the hook entry - if the plugin is using this symbol, it's likely
-					// using the function (which is much more common than hook usage).
-					// The scanner should have detected the function call, not the hook.
-					continue;
-				} else {
-					// Include hook entries that aren't conflicting with functions.
-					$filtered[] = $symbol;
-				}
-			} else {
-				// Unknown type or not in map, include it.
-				$filtered[] = $symbol;
-			}
-		}
-		
-		return array_unique( $filtered );
-	}
-
-	/**
-	 * Normalize compatibility map to ensure function versions take precedence over hook versions.
-	 * 
-	 * Some symbols exist as both functions and hooks. When both exist in the map,
-	 * we should prefer the function version (which is usually older) over the hook version.
-	 *
-	 * @param array $since_map Compatibility map.
-	 * @return array Normalized compatibility map.
-	 */
-	private function normalize_compatibility_map( $since_map ) {
-		// Common WordPress functions that have hooks with the same name (introduced later).
-		$function_hook_conflicts = array(
-			'set_transient'      => '2.8.0',  // Function exists since 2.8.0, hook added in 6.8.0
-			'get_transient'      => '2.8.0',  // Function exists since 2.8.0
-			'delete_transient'   => '2.8.0',  // Function exists since 2.8.0
-			'set_site_transient' => '2.9.0', // Function exists since 2.9.0, hook added in 6.8.0
-			'get_site_transient' => '2.9.0',  // Function exists since 2.9.0
-			'delete_site_transient' => '2.9.0', // Function exists since 2.9.0
-		);
-
-		$normalized_map = $since_map;
-
-		foreach ( $function_hook_conflicts as $symbol => $function_version ) {
-			// Check if this symbol exists in the map as a hook.
-			if ( isset( $normalized_map[ $symbol ] ) && 
-				 isset( $normalized_map[ $symbol ]['type'] ) && 
-				 $normalized_map[ $symbol ]['type'] === 'hook' ) {
-				
-				// Check if there's also a function version in the map.
-				// If not, we need to add it with the correct version.
-				$hook_version = $normalized_map[ $symbol ]['since'] ?? null;
-				
-				// If the hook version is newer than the function version, replace it with function version.
-				if ( $hook_version && 
-					 \WP_Since\Utils\VersionHelper::compare( 
-						 \WP_Since\Utils\VersionHelper::normalize( $hook_version ), 
-						 \WP_Since\Utils\VersionHelper::normalize( $function_version ) 
-					 ) > 0 ) {
-					// Replace hook entry with function entry.
-					$normalized_map[ $symbol ] = array(
-						'since' => $function_version,
-						'type' => 'function',
-						'file' => $normalized_map[ $symbol ]['file'] ?? '',
-					);
-				}
-			}
-		}
-
-		return $normalized_map;
 	}
 
 	/**
@@ -818,6 +695,22 @@ class WP_Compat_Scanner_CLI {
 		}
 
 		return $deprecated;
+	}
+
+	/**
+	 * Format a symbol key for display.
+	 *
+	 * Converts type-prefixed keys (e.g. "function:set_transient") into
+	 * a human-readable format like "set_transient (function)".
+	 *
+	 * @param string $symbol Symbol key, optionally type-prefixed.
+	 * @return string Formatted symbol name.
+	 */
+	private function format_symbol_name( $symbol ) {
+		if ( preg_match( '/^(function|hook|class|method|interface|trait):(.+)$/', $symbol, $matches ) ) {
+			return sprintf( '%s (%s)', $matches[2], $matches[1] );
+		}
+		return $symbol;
 	}
 
 	/**

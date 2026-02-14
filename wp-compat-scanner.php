@@ -12,7 +12,7 @@
  * Plugin URI:        https://github.com/your-username/wp-compat-scanner
  * Description:       Scan WordPress plugins for compatibility issues by checking used functions, classes, methods, and hooks against their @since versions.
  * Requires at least: 5.0
- * Version:           1.0.0
+ * Version:           1.1.0
  * Requires PHP:      7.4
  * Author:            Your Name
  * Author URI:        https://github.com/your-username/wp-compat-scanner
@@ -27,7 +27,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants.
-define( 'WP_COMPAT_SCANNER_VERSION', '1.0.0' );
+define( 'WP_COMPAT_SCANNER_VERSION', '1.1.0' );
 define( 'WP_COMPAT_SCANNER_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WP_COMPAT_SCANNER_URL', plugin_dir_url( __FILE__ ) );
 
