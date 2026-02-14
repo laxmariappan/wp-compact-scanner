@@ -1,5 +1,7 @@
 # WP Compat Scanner
 
+**Stable tag:** 1.1.0
+
 WordPress plugin that scans your installed plugins for compatibility issues with specific WordPress versions. Uses the [wp-since](https://github.com/eduardovillao/wp-since) library to detect deprecated functions, version mismatches, and compatibility problems.
 
 <img width="922" height="268" alt="image" src="https://github.com/user-attachments/assets/d12bc45f-be94-41c2-8f69-ac554e3b36b3" />
