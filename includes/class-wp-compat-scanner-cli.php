@@ -707,9 +707,8 @@ class WP_Compat_Scanner_CLI {
 	 * @return string Formatted symbol name.
 	 */
 	private function format_symbol_name( $symbol ) {
-		if ( strpos( $symbol, ':' ) !== false ) {
-			list( $type, $name ) = explode( ':', $symbol, 2 );
-			return sprintf( '%s (%s)', $name, $type );
+		if ( preg_match( '/^(function|hook|class|method|interface|trait):(.+)$/', $symbol, $matches ) ) {
+			return sprintf( '%s (%s)', $matches[2], $matches[1] );
 		}
 		return $symbol;
 	}
